@@ -768,7 +768,7 @@ impl<T: MontConfig<N>, const N: usize> FpConfig<N> for MontBackend<T, N> {
     /// [here](https://hackmd.io/@zkteam/modular_multiplication) if
     /// `P::MODULUS` has (a) a non-zero MSB, and (b) at least one
     /// zero bit in the rest of the modulus.
-    #[inline]
+    #[inline(always)]
     fn mul_assign(a: &mut Fp<Self, N>, b: &Fp<Self, N>) {
         T::mul_assign(a, b)
     }

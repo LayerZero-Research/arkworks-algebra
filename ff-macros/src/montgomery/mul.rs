@@ -1,6 +1,7 @@
 use quote::quote;
 
 // Standalone RISC-V 64 CIOS multiplication for N=4
+#[inline(always)]
 fn riscv64_cios_mul_n4(
     modulus_limbs: &[u64],
 ) -> proc_macro2::TokenStream {
@@ -11,7 +12,7 @@ fn riscv64_cios_mul_n4(
     
     quote! {
         #[inline(always)]
-        unsafe fn riscv_mac(a0: u64, a1: u64, a2: u64, carry_out: &mut u64) -> u64 {
+        unsafe fn riscv_mac(a0: u64, a1: u64, a2: u64) -> (u64, u64) {
             let mut sum_low: u64;
             let mut mul_lo: u64;
             let mut mul_hi: u64;
@@ -35,12 +36,28 @@ fn riscv64_cios_mul_n4(
                 carry_high = out(reg) carry_high,
                 options(pure, nomem, nostack),
             );
-            *carry_out = carry_high;
-            sum_low
+            (sum_low, carry_high)
         }
 
         #[inline(always)]
-        unsafe fn riscv_mac_discard(a0: u64, a1: u64, a2: u64, carry_out: &mut u64) {
+        unsafe fn riscv_mac_init(a1: u64, a2: u64) -> (u64, u64) {
+            let mut mul_lo: u64;
+            let mut mul_hi: u64;
+            core::arch::asm!(
+                "mul    {mul_lo}, {a1}, {a2}",
+                "mulhu  {mul_hi}, {a1}, {a2}",
+                // a0 == 0: sum_low = mul_lo; carry_high = mul_hi
+                a1 = in(reg) a1,
+                a2 = in(reg) a2,
+                mul_lo = out(reg) mul_lo,
+                mul_hi = out(reg) mul_hi,
+                options(pure, nomem, nostack),
+            );
+            (mul_lo, mul_hi)
+        }
+
+        #[inline(always)]
+        unsafe fn riscv_mac_discard(a0: u64, a1: u64, a2: u64) -> u64 {
             let mut throw_low: u64;
             let mut mul_lo: u64;
             let mut mul_hi: u64;
@@ -64,7 +81,7 @@ fn riscv64_cios_mul_n4(
                 carry_high = out(reg) carry_high,
                 options(pure, nomem, nostack),
             );
-            *carry_out = carry_high;
+            carry_high
         }
 
         #[inline(always)]
@@ -96,6 +113,36 @@ fn riscv64_cios_mul_n4(
                 mul_hi = out(reg) mul_hi,
                 sum0 = out(reg) sum0,
                 c1 = out(reg) c1,
+                c2 = out(reg) c2,
+                carry_out = out(reg) carry_out,
+                options(pure, nomem, nostack),
+            );
+            *carry_inout = carry_out;
+            sum0
+        }
+
+        #[inline(always)]
+        unsafe fn riscv_mac_with_carry_zeroacc(a1: u64, a2: u64, carry_inout: &mut u64) -> u64 {
+            let mut sum0: u64;
+            let mut mul_lo: u64;
+            let mut mul_hi: u64;
+            let mut c2: u64;
+            let mut carry_out: u64;
+            let cin: u64 = *carry_inout;
+            core::arch::asm!(
+                "mul    {mul_lo}, {a1}, {a2}",
+                "mulhu  {mul_hi}, {a1}, {a2}",
+                // a0 == 0: sum0 = mul_lo + cin; c2 = carry from that add
+                "add    {sum0}, {mul_lo}, {cin}",
+                "sltu   {c2}, {sum0}, {cin}",
+                // carry_out = mul_hi + c2
+                "add    {carry_out}, {mul_hi}, {c2}",
+                a1 = in(reg) a1,
+                a2 = in(reg) a2,
+                cin = in(reg) cin,
+                mul_lo = out(reg) mul_lo,
+                mul_hi = out(reg) mul_hi,
+                sum0 = out(reg) sum0,
                 c2 = out(reg) c2,
                 carry_out = out(reg) carry_out,
                 options(pure, nomem, nostack),
@@ -204,10 +251,10 @@ fn riscv64_cios_mul_n4(
         }
 
         // Load inputs (minimize memory traffic):
-        let mut r0: u64 = 0;
-        let mut r1: u64 = 0;
-        let mut r2: u64 = 0;
-        let mut r3: u64 = 0;
+        let mut r0: u64;
+        let mut r1: u64;
+        let mut r2: u64;
+        let mut r3: u64;
 
         let a0 = (a.0).0[0];
         let a1 = (a.0).0[1];
@@ -219,32 +266,30 @@ fn riscv64_cios_mul_n4(
         let b2 = (b.0).0[2];
         let b3 = (b.0).0[3];
 
-        let inv = Self::INV;
+        const inv: u64 = 14042775128853446655;
         let m0: u64 = #modulus_0;
         let m1: u64 = #modulus_1;
         let m2: u64 = #modulus_2;
         let m3: u64 = #modulus_3;
 
         // i = 0
-        let mut carry1: u64 = 0;
-        r0 = unsafe { riscv_mac(r0, a0, b0, &mut carry1) };
+        let (r0_init, mut carry1) = unsafe { riscv_mac_init(a0, b0) };
+        r0 = r0_init;
         let k0 = r0.wrapping_mul(inv);
-        let mut carry2: u64 = 0;
-        unsafe { riscv_mac_discard(r0, k0, m0, &mut carry2) };
-        r1 = unsafe { riscv_mac_with_carry(r1, a1, b0, &mut carry1) };
+        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k0, m0) };
+        r1 = unsafe { riscv_mac_with_carry_zeroacc(a1, b0, &mut carry1) };
         r0 = unsafe { riscv_mac_with_carry(r1, k0, m1, &mut carry2) };
-        r2 = unsafe { riscv_mac_with_carry(r2, a2, b0, &mut carry1) };
+        r2 = unsafe { riscv_mac_with_carry_zeroacc(a2, b0, &mut carry1) };
         r1 = unsafe { riscv_mac_with_carry(r2, k0, m2, &mut carry2) };
-        r3 = unsafe { riscv_mac_with_carry(r3, a3, b0, &mut carry1) };
+        r3 = unsafe { riscv_mac_with_carry_zeroacc(a3, b0, &mut carry1) };
         r2 = unsafe { riscv_mac_with_carry(r3, k0, m3, &mut carry2) };
         r3 = carry1.wrapping_add(carry2);
 
         // i = 1
-        carry1 = 0;
-        r0 = unsafe { riscv_mac(r0, a0, b1, &mut carry1) };
+        let (r0_new_1, mut carry1) = unsafe { riscv_mac(r0, a0, b1) };
+        r0 = r0_new_1;
         let k1 = r0.wrapping_mul(inv);
-        carry2 = 0;
-        unsafe { riscv_mac_discard(r0, k1, m0, &mut carry2) };
+        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k1, m0) };
         r1 = unsafe { riscv_mac_with_carry(r1, a1, b1, &mut carry1) };
         r0 = unsafe { riscv_mac_with_carry(r1, k1, m1, &mut carry2) };
         r2 = unsafe { riscv_mac_with_carry(r2, a2, b1, &mut carry1) };
@@ -254,11 +299,10 @@ fn riscv64_cios_mul_n4(
         r3 = carry1.wrapping_add(carry2);
 
         // i = 2
-        carry1 = 0;
-        r0 = unsafe { riscv_mac(r0, a0, b2, &mut carry1) };
+        let (r0_new_2, mut carry1) = unsafe { riscv_mac(r0, a0, b2) };
+        r0 = r0_new_2;
         let k2 = r0.wrapping_mul(inv);
-        carry2 = 0;
-        unsafe { riscv_mac_discard(r0, k2, m0, &mut carry2) };
+        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k2, m0) };
         r1 = unsafe { riscv_mac_with_carry(r1, a1, b2, &mut carry1) };
         r0 = unsafe { riscv_mac_with_carry(r1, k2, m1, &mut carry2) };
         r2 = unsafe { riscv_mac_with_carry(r2, a2, b2, &mut carry1) };
@@ -268,11 +312,10 @@ fn riscv64_cios_mul_n4(
         r3 = carry1.wrapping_add(carry2);
 
         // i = 3
-        carry1 = 0;
-        r0 = unsafe { riscv_mac(r0, a0, b3, &mut carry1) };
+        let (r0_new_3, mut carry1) = unsafe { riscv_mac(r0, a0, b3) };
+        r0 = r0_new_3;
         let k3 = r0.wrapping_mul(inv);
-        carry2 = 0;
-        unsafe { riscv_mac_discard(r0, k3, m0, &mut carry2) };
+        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k3, m0) };
         r1 = unsafe { riscv_mac_with_carry(r1, a1, b3, &mut carry1) };
         r0 = unsafe { riscv_mac_with_carry(r1, k3, m1, &mut carry2) };
         r2 = unsafe { riscv_mac_with_carry(r2, a2, b3, &mut carry1) };
@@ -402,6 +445,7 @@ fn generate_fallback_impl(
     body
 }
 
+#[inline(always)]
 pub(super) fn mul_assign_impl(
     can_use_no_carry_mul_opt: bool,
     num_limbs: usize,
