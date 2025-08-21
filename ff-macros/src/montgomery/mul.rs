@@ -1,6 +1,6 @@
 use quote::quote;
 
-// Standalone RISC-V 64 CIOS multiplication for N=4
+// Standalone RISC-V 64 CIOS multiplication for Fr scalar field
 #[inline(always)]
 fn generate_riscv_cios_multiplication(
     modulus_limbs: &[u64],
@@ -21,10 +21,8 @@ fn generate_riscv_cios_multiplication(
             core::arch::asm!(
                 "mul    {mul_lo}, {a1}, {a2}",
                 "mulhu  {mul_hi}, {a1}, {a2}",
-                // Add a0 into low limb, track carry
                 "add    {sum_low}, {mul_lo}, {a0}",
                 "sltu   {carry_bit}, {sum_low}, {a0}",
-                // High limb (carry)
                 "add    {carry_high}, {mul_hi}, {carry_bit}",
                 a0 = in(reg) a0,
                 a1 = in(reg) a1,
@@ -46,7 +44,6 @@ fn generate_riscv_cios_multiplication(
             core::arch::asm!(
                 "mul    {mul_lo}, {a1}, {a2}",
                 "mulhu  {mul_hi}, {a1}, {a2}",
-                // a0 == 0: sum_low = mul_lo; carry_high = mul_hi
                 a1 = in(reg) a1,
                 a2 = in(reg) a2,
                 mul_lo = out(reg) mul_lo,
@@ -66,10 +63,8 @@ fn generate_riscv_cios_multiplication(
             core::arch::asm!(
                 "mul    {mul_lo}, {a1}, {a2}",
                 "mulhu  {mul_hi}, {a1}, {a2}",
-                // Add a0 into low limb, detect carry into high
                 "add    {throw_low}, {mul_lo}, {a0}",
                 "sltu   {carry_bit}, {throw_low}, {a0}",
-                // High limb (carry)
                 "add    {carry_high}, {mul_hi}, {carry_bit}",
                 a0 = in(reg) a0,
                 a1 = in(reg) a1,
@@ -96,13 +91,10 @@ fn generate_riscv_cios_multiplication(
             core::arch::asm!(
                 "mul    {mul_lo}, {a1}, {a2}",
                 "mulhu  {mul_hi}, {a1}, {a2}",
-                // sum0 = a0 + mul_lo
                 "add    {sum0}, {a0}, {mul_lo}",
                 "sltu   {c1}, {sum0}, {a0}",
-                // sum0 += cin
                 "add    {sum0}, {sum0}, {cin}",
                 "sltu   {c2}, {sum0}, {cin}",
-                // carry_out = mul_hi + c1 + c2
                 "add    {carry_out}, {mul_hi}, {c1}",
                 "add    {carry_out}, {carry_out}, {c2}",
                 a0 = in(reg) a0,
@@ -132,10 +124,8 @@ fn generate_riscv_cios_multiplication(
             core::arch::asm!(
                 "mul    {mul_lo}, {a1}, {a2}",
                 "mulhu  {mul_hi}, {a1}, {a2}",
-                // a0 == 0: sum0 = mul_lo + cin; c2 = carry from that add
                 "add    {sum0}, {mul_lo}, {cin}",
                 "sltu   {c2}, {sum0}, {cin}",
-                // carry_out = mul_hi + c2
                 "add    {carry_out}, {mul_hi}, {c2}",
                 a1 = in(reg) a1,
                 a2 = in(reg) a2,
@@ -253,70 +243,51 @@ fn generate_riscv_cios_multiplication(
             (out0, out1, out2, out3)
         }
 
-        // // Load inputs (minimize memory traffic):
-        // let mut r0: u64;
-        // let mut r1: u64;
-        // let mut r2: u64;
-        // let mut r3: u64;
-
-        // let a0 = (a.0).0[0];
-        // let a1 = (a.0).0[1];
-        // let a2 = (a.0).0[2];
-        // let a3 = (a.0).0[3];
-
-        // let b0 = (b.0).0[0];
-        // let b1 = (b.0).0[1];
-        // let b2 = (b.0).0[2];
-        // let b3 = (b.0).0[3];
-        let aa = (a.0).0;
-        let bb = (b.0).0;
-        let mm: [u64; 4] = [#modulus_0, #modulus_1, #modulus_2, #modulus_3];
-        let mut rr: [u64; 4] = [0; 4];
-        let mut k0;
+        let lhs = (a.0).0;
+        let rhs = (b.0).0;
+        let modulo: [u64; 4] = [#modulus_0, #modulus_1, #modulus_2, #modulus_3];
+        let mut accumulator: [u64; 4] = [0; 4];
+        let mut k;
         let mut carry1: u64;
         let mut carry2: u64;
 
         let inv: u64 = Self::INV;
-        // let m0: u64 = #modulus_0;
-        // let m1: u64 = #modulus_1;
-        // let m2: u64 = #modulus_2;
-        // let m3: u64 = #modulus_3;
 
         // Macros to choose init vs non-init paths at compile time without branching
-        macro_rules! mac_first {
+        macro_rules! riscv_mac_generator {
             (0) => {{
-                (rr[0], carry1) = unsafe { riscv_mac_init(aa[0], bb[0]) };
+                (accumulator[0], carry1) = unsafe { riscv_mac_init(lhs[0], rhs[0]) };
             }};
             ($i:tt) => {{
-                (rr[0], carry1) = unsafe { riscv_mac(rr[0], aa[0], bb[$i]) };
+                (accumulator[0], carry1) = unsafe { riscv_mac(accumulator[0], lhs[0], rhs[$i]) };
             }};
         }
 
-        macro_rules! mac_with_carry_aa {
+        macro_rules! riscv_conditional_mac_with_carry_generator {
             (0, $idx:tt) => {{
-                rr[$idx] = unsafe { riscv_mac_with_carry_zeroacc(aa[$idx], bb[0], &mut carry1) };
+                accumulator[$idx] = unsafe { riscv_mac_with_carry_zeroacc(lhs[$idx], rhs[0], &mut carry1) };
             }};
             ($i:tt, $idx:tt) => {{
-                rr[$idx] = unsafe { riscv_mac_with_carry(rr[$idx], aa[$idx], bb[$i], &mut carry1) };
+                accumulator[$idx] = unsafe { riscv_mac_with_carry(accumulator[$idx], lhs[$idx], rhs[$i], &mut carry1) };
             }};
         }
 
         // Unroll all rounds with a local macro that specializes i == 0 vs i > 0 at compile time
         macro_rules! riscv_cios_round {
             ($i:tt) => {{
-                mac_first!($i);
-                k0 = rr[0].wrapping_mul(inv);
-                carry2 = unsafe { riscv_mac_discard(rr[0], k0, mm[0]) };
+                riscv_mac_generator!($i);
+                k = accumulator[0].wrapping_mul(inv);
+                carry2 = unsafe { riscv_mac_discard(accumulator[0], k, modulo[0]) };
 
-                mac_with_carry_aa!($i, 1);
-                rr[0] = unsafe { riscv_mac_with_carry(rr[1], k0, mm[1], &mut carry2) };
+                riscv_conditional_mac_with_carry_generator!($i, 1);
+                accumulator[0] = unsafe { riscv_mac_with_carry(accumulator[1], k, modulo[1], &mut carry2) };
 
-                mac_with_carry_aa!($i, 2);
-                rr[1] = unsafe { riscv_mac_with_carry(rr[2], k0, mm[2], &mut carry2) };
+                riscv_conditional_mac_with_carry_generator!($i, 2);
+                accumulator[1] = unsafe { riscv_mac_with_carry(accumulator[2], k, modulo[2], &mut carry2) };
 
-                mac_with_carry_aa!($i, 3);
-                rr[2] = unsafe { riscv_mac_with_carry(rr[3], k0, mm[3], &mut carry2) };
-                rr[3] = carry1.wrapping_add(carry2);
+                riscv_conditional_mac_with_carry_generator!($i, 3);
+                accumulator[2] = unsafe { riscv_mac_with_carry(accumulator[3], k, modulo[3], &mut carry2) };
+                accumulator[3] = carry1.wrapping_add(carry2);
             }};
         }
 
@@ -325,11 +296,11 @@ fn generate_riscv_cios_multiplication(
         riscv_cios_round!(2);
         riscv_cios_round!(3);
 
-        // Final conditional subtract using RISC-V early-exit reduction
-        (rr[0], rr[1], rr[2], rr[3]) = unsafe {
-            riscv_conditional_sub_reduce(rr[0], rr[1], rr[2], rr[3], mm[0], mm[1], mm[2], mm[3])
+        // Final conditional subtract
+        (accumulator[0], accumulator[1], accumulator[2], accumulator[3]) = unsafe {
+            riscv_conditional_sub_reduce(accumulator[0], accumulator[1], accumulator[2], accumulator[3], modulo[0], modulo[1], modulo[2], modulo[3])
         };
-        (a.0).0 = [rr[0], rr[1], rr[2], rr[3]];
+        (a.0).0 = [accumulator[0], accumulator[1], accumulator[2], accumulator[3]];
     }
 }
 
@@ -454,8 +425,15 @@ pub(super) fn mul_assign_impl(
     modulus_limbs: &[u64],
     modulus_has_spare_bit: bool,
 ) -> proc_macro2::TokenStream {
-    // For N=4, generate both RISC-V and fallback implementations with conditional compilation
-    if num_limbs == 4 {
+    // For N=4 and BN254 Fr modulus, generate RISC-V implementation
+    // Only enable the RISC-V path for riscv64 targets via cfg below.
+    const BN254_FR_MODULUS_LIMBS: [u64; 4] = [
+        0x43e1f593f0000001,
+        0x2833e84879b97091,
+        0xb85045b68181585d,
+        0x30644e72e131a029,
+    ];
+    if num_limbs == 4 && modulus_limbs.len() == 4 && modulus_limbs == BN254_FR_MODULUS_LIMBS {
         let riscv_impl = generate_riscv_cios_multiplication(modulus_limbs);
         let default_impl = generate_cios_multiplication(
             can_use_no_carry_mul_opt,
@@ -463,7 +441,6 @@ pub(super) fn mul_assign_impl(
             modulus_limbs,
             modulus_has_spare_bit,
         );
-        
         return quote! {
             #[cfg(all(feature = "asm", target_arch = "riscv64"))]
             {
@@ -472,7 +449,6 @@ pub(super) fn mul_assign_impl(
                     #riscv_impl
                 }
             }
-            
             #[cfg(not(all(feature = "asm", target_arch = "riscv64")))]
             {
                 #default_impl
