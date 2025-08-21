@@ -253,85 +253,83 @@ fn generate_riscv_cios_multiplication(
             (out0, out1, out2, out3)
         }
 
-        // Load inputs (minimize memory traffic):
-        let mut r0: u64;
-        let mut r1: u64;
-        let mut r2: u64;
-        let mut r3: u64;
+        // // Load inputs (minimize memory traffic):
+        // let mut r0: u64;
+        // let mut r1: u64;
+        // let mut r2: u64;
+        // let mut r3: u64;
 
-        let a0 = (a.0).0[0];
-        let a1 = (a.0).0[1];
-        let a2 = (a.0).0[2];
-        let a3 = (a.0).0[3];
+        // let a0 = (a.0).0[0];
+        // let a1 = (a.0).0[1];
+        // let a2 = (a.0).0[2];
+        // let a3 = (a.0).0[3];
 
-        let b0 = (b.0).0[0];
-        let b1 = (b.0).0[1];
-        let b2 = (b.0).0[2];
-        let b3 = (b.0).0[3];
+        // let b0 = (b.0).0[0];
+        // let b1 = (b.0).0[1];
+        // let b2 = (b.0).0[2];
+        // let b3 = (b.0).0[3];
+        let aa = (a.0).0;
+        let bb = (b.0).0;
+        let mm: [u64; 4] = [#modulus_0, #modulus_1, #modulus_2, #modulus_3];
+        let mut rr: [u64; 4] = [0; 4];
+        let mut k0;
+        let mut carry1: u64;
+        let mut carry2: u64;
 
         let inv: u64 = Self::INV;
-        let m0: u64 = #modulus_0;
-        let m1: u64 = #modulus_1;
-        let m2: u64 = #modulus_2;
-        let m3: u64 = #modulus_3;
+        // let m0: u64 = #modulus_0;
+        // let m1: u64 = #modulus_1;
+        // let m2: u64 = #modulus_2;
+        // let m3: u64 = #modulus_3;
 
-        // i = 0
-        let (r0_init, mut carry1) = unsafe { riscv_mac_init(a0, b0) };
-        r0 = r0_init;
-        let k0 = r0.wrapping_mul(inv);
-        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k0, m0) };
-        r1 = unsafe { riscv_mac_with_carry_zeroacc(a1, b0, &mut carry1) };
-        r0 = unsafe { riscv_mac_with_carry(r1, k0, m1, &mut carry2) };
-        r2 = unsafe { riscv_mac_with_carry_zeroacc(a2, b0, &mut carry1) };
-        r1 = unsafe { riscv_mac_with_carry(r2, k0, m2, &mut carry2) };
-        r3 = unsafe { riscv_mac_with_carry_zeroacc(a3, b0, &mut carry1) };
-        r2 = unsafe { riscv_mac_with_carry(r3, k0, m3, &mut carry2) };
-        r3 = carry1.wrapping_add(carry2);
+        // Macros to choose init vs non-init paths at compile time without branching
+        macro_rules! mac_first {
+            (0) => {{
+                (rr[0], carry1) = unsafe { riscv_mac_init(aa[0], bb[0]) };
+            }};
+            ($i:tt) => {{
+                (rr[0], carry1) = unsafe { riscv_mac(rr[0], aa[0], bb[$i]) };
+            }};
+        }
 
-        // i = 1
-        let (r0_new_1, mut carry1) = unsafe { riscv_mac(r0, a0, b1) };
-        r0 = r0_new_1;
-        let k1 = r0.wrapping_mul(inv);
-        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k1, m0) };
-        r1 = unsafe { riscv_mac_with_carry(r1, a1, b1, &mut carry1) };
-        r0 = unsafe { riscv_mac_with_carry(r1, k1, m1, &mut carry2) };
-        r2 = unsafe { riscv_mac_with_carry(r2, a2, b1, &mut carry1) };
-        r1 = unsafe { riscv_mac_with_carry(r2, k1, m2, &mut carry2) };
-        r3 = unsafe { riscv_mac_with_carry(r3, a3, b1, &mut carry1) };
-        r2 = unsafe { riscv_mac_with_carry(r3, k1, m3, &mut carry2) };
-        r3 = carry1.wrapping_add(carry2);
+        macro_rules! mac_with_carry_aa {
+            (0, $idx:tt) => {{
+                rr[$idx] = unsafe { riscv_mac_with_carry_zeroacc(aa[$idx], bb[0], &mut carry1) };
+            }};
+            ($i:tt, $idx:tt) => {{
+                rr[$idx] = unsafe { riscv_mac_with_carry(rr[$idx], aa[$idx], bb[$i], &mut carry1) };
+            }};
+        }
 
-        // i = 2
-        let (r0_new_2, mut carry1) = unsafe { riscv_mac(r0, a0, b2) };
-        r0 = r0_new_2;
-        let k2 = r0.wrapping_mul(inv);
-        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k2, m0) };
-        r1 = unsafe { riscv_mac_with_carry(r1, a1, b2, &mut carry1) };
-        r0 = unsafe { riscv_mac_with_carry(r1, k2, m1, &mut carry2) };
-        r2 = unsafe { riscv_mac_with_carry(r2, a2, b2, &mut carry1) };
-        r1 = unsafe { riscv_mac_with_carry(r2, k2, m2, &mut carry2) };
-        r3 = unsafe { riscv_mac_with_carry(r3, a3, b2, &mut carry1) };
-        r2 = unsafe { riscv_mac_with_carry(r3, k2, m3, &mut carry2) };
-        r3 = carry1.wrapping_add(carry2);
+        // Unroll all rounds with a local macro that specializes i == 0 vs i > 0 at compile time
+        macro_rules! riscv_cios_round {
+            ($i:tt) => {{
+                mac_first!($i);
+                k0 = rr[0].wrapping_mul(inv);
+                carry2 = unsafe { riscv_mac_discard(rr[0], k0, mm[0]) };
 
-        // i = 3
-        let (r0_new_3, mut carry1) = unsafe { riscv_mac(r0, a0, b3) };
-        r0 = r0_new_3;
-        let k3 = r0.wrapping_mul(inv);
-        let mut carry2: u64 = unsafe { riscv_mac_discard(r0, k3, m0) };
-        r1 = unsafe { riscv_mac_with_carry(r1, a1, b3, &mut carry1) };
-        r0 = unsafe { riscv_mac_with_carry(r1, k3, m1, &mut carry2) };
-        r2 = unsafe { riscv_mac_with_carry(r2, a2, b3, &mut carry1) };
-        r1 = unsafe { riscv_mac_with_carry(r2, k3, m2, &mut carry2) };
-        r3 = unsafe { riscv_mac_with_carry(r3, a3, b3, &mut carry1) };
-        r2 = unsafe { riscv_mac_with_carry(r3, k3, m3, &mut carry2) };
-        r3 = carry1.wrapping_add(carry2);
+                mac_with_carry_aa!($i, 1);
+                rr[0] = unsafe { riscv_mac_with_carry(rr[1], k0, mm[1], &mut carry2) };
+
+                mac_with_carry_aa!($i, 2);
+                rr[1] = unsafe { riscv_mac_with_carry(rr[2], k0, mm[2], &mut carry2) };
+
+                mac_with_carry_aa!($i, 3);
+                rr[2] = unsafe { riscv_mac_with_carry(rr[3], k0, mm[3], &mut carry2) };
+                rr[3] = carry1.wrapping_add(carry2);
+            }};
+        }
+
+        riscv_cios_round!(0);
+        riscv_cios_round!(1);
+        riscv_cios_round!(2);
+        riscv_cios_round!(3);
 
         // Final conditional subtract using RISC-V early-exit reduction
-        (r0, r1, r2, r3) = unsafe {
-            riscv_conditional_sub_reduce(r0, r1, r2, r3, m0, m1, m2, m3)
+        (rr[0], rr[1], rr[2], rr[3]) = unsafe {
+            riscv_conditional_sub_reduce(rr[0], rr[1], rr[2], rr[3], mm[0], mm[1], mm[2], mm[3])
         };
-        (a.0).0 = [r0, r1, r2, r3];
+        (a.0).0 = [rr[0], rr[1], rr[2], rr[3]];
     }
 }
 
