@@ -728,7 +728,7 @@ impl<'a, P: FpConfig<N>, const N: usize> Sub<&'a Fp<P, N>> for Fp<P, N> {
 impl<'a, P: FpConfig<N>, const N: usize> Mul<&'a Fp<P, N>> for Fp<P, N> {
     type Output = Self;
 
-    #[inline]
+    #[inline(always)]
     fn mul(mut self, other: &Self) -> Self {
         self.mul_assign(other);
         self
@@ -740,7 +740,7 @@ impl<'a, P: FpConfig<N>, const N: usize> Div<&'a Fp<P, N>> for Fp<P, N> {
 
     /// Returns `self * other.inverse()` if `other.inverse()` is `Some`, and
     /// panics otherwise.
-    #[inline]
+    #[inline(always)]
     fn div(mut self, other: &Self) -> Self {
         self.mul_assign(&other.inverse().unwrap());
         self
@@ -772,7 +772,7 @@ impl<'a, 'b, P: FpConfig<N>, const N: usize> Sub<&'b Fp<P, N>> for &'a Fp<P, N> 
 impl<'a, 'b, P: FpConfig<N>, const N: usize> Mul<&'b Fp<P, N>> for &'a Fp<P, N> {
     type Output = Fp<P, N>;
 
-    #[inline]
+    #[inline(always)]
     fn mul(self, other: &Fp<P, N>) -> Fp<P, N> {
         let mut result = *self;
         result.mul_assign(other);
@@ -783,7 +783,7 @@ impl<'a, 'b, P: FpConfig<N>, const N: usize> Mul<&'b Fp<P, N>> for &'a Fp<P, N> 
 impl<'a, 'b, P: FpConfig<N>, const N: usize> Div<&'b Fp<P, N>> for &'a Fp<P, N> {
     type Output = Fp<P, N>;
 
-    #[inline]
+    #[inline(always)]
     fn div(self, other: &Fp<P, N>) -> Fp<P, N> {
         let mut result = *self;
         result.div_assign(other);
@@ -896,6 +896,7 @@ impl<'a, P: FpConfig<N>, const N: usize> core::ops::SubAssign<&'a mut Self> for 
 }
 
 impl<'a, P: FpConfig<N>, const N: usize> MulAssign<&'a Self> for Fp<P, N> {
+    #[inline(always)]
     fn mul_assign(&mut self, other: &Self) {
         P::mul_assign(self, other)
     }
